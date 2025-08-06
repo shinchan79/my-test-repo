@@ -1,5 +1,6 @@
 import { Poll } from './poll.js';
 
+// Export Poll class cho Durable Object
 export { Poll };
 
 export default {
@@ -20,23 +21,19 @@ export default {
 
     // Serve static files
     if (path === "/" || path === "/index.html") {
-      return serveStaticFile("/public/index.html", env);
+      return serveStaticFile("index.html", env);
     }
     
     if (path === "/styles.css") {
-      return serveStaticFile("/public/styles.css", env);
+      return serveStaticFile("styles.css", env);
     }
     
     if (path === "/app.js") {
-      return serveStaticFile("/public/app.js", env);
+      return serveStaticFile("app.js", env);
     }
     
     if (path === "/test.html") {
-      return serveStaticFile("/test.html", env);
-    }
-    
-    if (path.startsWith("/public/")) {
-      return serveStaticFile(path, env);
+      return serveStaticFile("test.html", env);
     }
 
     // API endpoints
@@ -88,11 +85,21 @@ async function handleAPI(request, env, path) {
         created: Date.now()
       }));
 
-      return pollObj.fetch(new Request(`${url.origin}/create`, {
+      const createResponse = await pollObj.fetch(new Request(`${url.origin}/create`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(createData)
       }));
+
+      // Add CORS headers to response
+      const createResponseData = await createResponse.text();
+      return new Response(createResponseData, {
+        status: createResponse.status,
+        headers: { 
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*"
+        }
+      });
 
     case "/api/vote":
       if (request.method !== "POST") {
@@ -102,15 +109,35 @@ async function handleAPI(request, env, path) {
       const voteData = await request.json();
       console.log('Vote request:', voteData);
       
-      return pollObj.fetch(new Request(`${url.origin}/vote`, {
+      const voteResponse = await pollObj.fetch(new Request(`${url.origin}/vote`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(voteData)
       }));
 
+      // Add CORS headers to response
+      const voteResponseData = await voteResponse.text();
+      return new Response(voteResponseData, {
+        status: voteResponse.status,
+        headers: { 
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*"
+        }
+      });
+
     case "/api/get":
       console.log('Getting poll data for ID:', pollId);
-      return pollObj.fetch(new Request(`${url.origin}/get`));
+      const getResponse = await pollObj.fetch(new Request(`${url.origin}/get`));
+      
+      // Add CORS headers to response
+      const getResponseData = await getResponse.text();
+      return new Response(getResponseData, {
+        status: getResponse.status,
+        headers: { 
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*"
+        }
+      });
 
     default:
       return new Response("Not found", { status: 404 });
@@ -130,31 +157,28 @@ async function handleWebSocket(request, env, path) {
   return pollObj.fetch(request);
 }
 
-async function serveStaticFile(path, env) {
-  // Serve static files from public directory
-  let filePath = path.replace('/public/', '');
-  
-  // Define static files
+async function serveStaticFile(filename, env) {
+  // Define static files inline (since we can't read from filesystem)
   const staticFiles = {
     'index.html': {
-      content: await getIndexHTML(),
+      content: getIndexHTML(),
       type: 'text/html'
     },
     'styles.css': {
-      content: await getStylesCSS(),
+      content: getStylesCSS(),
       type: 'text/css'
     },
     'app.js': {
-      content: await getAppJS(),
+      content: getAppJS(),
       type: 'application/javascript'
     },
     'test.html': {
-      content: await getTestHTML(),
+      content: getTestHTML(),
       type: 'text/html'
     }
   };
   
-  const file = staticFiles[filePath];
+  const file = staticFiles[filename];
   if (file) {
     return new Response(file.content, {
       headers: { 
@@ -167,7 +191,7 @@ async function serveStaticFile(path, env) {
   return new Response("File not found", { status: 404 });
 }
 
-async function getIndexHTML() {
+function getIndexHTML() {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -273,7 +297,7 @@ async function getIndexHTML() {
 </html>`;
 }
 
-async function getStylesCSS() {
+function getStylesCSS() {
   return `/* Reset and Base Styles */
 * {
     margin: 0;
@@ -386,15 +410,9 @@ input:focus, textarea:focus {
     box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
 }
 
-.options-container {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: 15px;
-    margin-bottom: 15px;
-}
-
 .option-input {
     min-width: 200px;
+    margin-bottom: 10px;
 }
 
 /* Buttons */
@@ -689,10 +707,6 @@ input:focus, textarea:focus {
         font-size: 1.5em;
     }
     
-    .options-container {
-        grid-template-columns: 1fr;
-    }
-    
     .option-item {
         flex-direction: column;
         text-align: center;
@@ -762,30 +776,10 @@ input:focus, textarea:focus {
         opacity: 1;
         transform: translateY(0);
     }
-}
-
-/* Success/Error States */
-.success {
-    border-color: #28a745;
-    background-color: #d4edda;
-}
-
-.error-state {
-    border-color: #dc3545;
-    background-color: #f8d7da;
-}
-
-/* Hover Effects */
-.option-item:hover .vote-btn {
-    background: linear-gradient(135deg, #20c997 0%, #28a745 100%);
-}
-
-.stats-card:hover .stats-number {
-    color: #764ba2;
 }`;
 }
 
-async function getAppJS() {
+function getAppJS() {
   return `// Real-time Polling App JavaScript
 let currentPollId = null;
 let websocket = null;
@@ -795,17 +789,6 @@ let activeUsers = 0;
 // Debug function
 function debugLog(message) {
     console.log('[DEBUG]', message);
-    // Also show on page
-    const debugDiv = document.getElementById('debug') || createDebugDiv();
-    debugDiv.innerHTML += '<br>' + message;
-}
-
-function createDebugDiv() {
-    const div = document.createElement('div');
-    div.id = 'debug';
-    div.style.cssText = 'position:fixed;top:10px;right:10px;background:black;color:white;padding:10px;z-index:9999;max-width:300px;font-size:12px;';
-    document.body.appendChild(div);
-    return div;
 }
 
 // Generate a random poll ID
@@ -840,39 +823,41 @@ function showCreateForm() {
 }
 
 // Create poll
-document.getElementById('pollForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    
-    const question = document.getElementById('question').value;
-    const options = Array.from(document.querySelectorAll('.option-input'))
-        .map(input => input.value.trim())
-        .filter(option => option.length > 0);
+document.addEventListener('DOMContentLoaded', function() {
+    document.getElementById('pollForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
+        const question = document.getElementById('question').value;
+        const options = Array.from(document.querySelectorAll('.option-input'))
+            .map(input => input.value.trim())
+            .filter(option => option.length > 0);
 
-    if (options.length < 2) {
-        showError('Please add at least 2 options');
-        return;
-    }
-
-    const pollId = generatePollId();
-    currentPollId = pollId;
-
-    try {
-        showLoading();
-        const response = await fetch('/api/create?pollId=' + pollId, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ question, options })
-        });
-
-        if (response.ok) {
-            console.log('Poll created successfully, loading poll...');
-            loadPoll(pollId);
-        } else {
-            throw new Error('Failed to create poll');
+        if (options.length < 2) {
+            showError('Please add at least 2 options');
+            return;
         }
-    } catch (error) {
-        showError('Failed to create poll: ' + error.message);
-    }
+
+        const pollId = generatePollId();
+        currentPollId = pollId;
+
+        try {
+            showLoading();
+            const response = await fetch('/api/create?pollId=' + pollId, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question, options })
+            });
+
+            if (response.ok) {
+                console.log('Poll created successfully, loading poll...');
+                loadPoll(pollId);
+            } else {
+                throw new Error('Failed to create poll');
+            }
+        } catch (error) {
+            showError('Failed to create poll: ' + error.message);
+        }
+    });
 });
 
 // Load poll
@@ -1202,106 +1187,13 @@ window.addEventListener('load', function() {
     }
 });
 
-// Add keyboard shortcuts
-document.addEventListener('keydown', function(e) {
-    if (e.ctrlKey || e.metaKey) {
-        switch(e.key) {
-            case 'n':
-                e.preventDefault();
-                showCreateForm();
-                break;
-            case 'r':
-                e.preventDefault();
-                if (currentPollId) {
-                    loadPoll(currentPollId);
-                }
-                break;
-        }
-    }
-});
-
-// Add service worker for offline support (optional)
-if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js')
-            .then(registration => {
-                console.log('SW registered: ', registration);
-            })
-            .catch(registrationError => {
-                console.log('SW registration failed: ', registrationError);
-            });
-    });
-}
-
-// Add analytics tracking
-function trackEvent(eventName, data = {}) {
-    // Simple analytics tracking
-    console.log('Event:', eventName, data);
-    
-    // You can integrate with Google Analytics or other services here
-    if (typeof gtag !== 'undefined') {
-        gtag('event', eventName, data);
-    }
-}
-
-// Track poll creation
-document.getElementById('pollForm').addEventListener('submit', () => {
-    trackEvent('poll_created');
-});
-
 // Track votes for analytics
 function trackVote(option) {
-    trackEvent('vote_cast', { option });
+    console.log('Vote tracked:', option);
+}`;
 }
 
-// Add smooth scrolling for better UX
-document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-    anchor.addEventListener('click', function (e) {
-        e.preventDefault();
-        document.querySelector(this.getAttribute('href')).scrollIntoView({
-            behavior: 'smooth'
-        });
-    });
-});
-
-// Add confetti effect for successful vote (optional)
-function addConfetti() {
-    // Simple confetti effect
-    const colors = ['#667eea', '#764ba2', '#f093fb', '#f5576c'];
-    for (let i = 0; i < 50; i++) {
-        const confetti = document.createElement('div');
-        confetti.style.position = 'fixed';
-        confetti.style.left = Math.random() * 100 + 'vw';
-        confetti.style.top = '-10px';
-        confetti.style.width = '10px';
-        confetti.style.height = '10px';
-        confetti.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
-        confetti.style.borderRadius = '50%';
-        confetti.style.pointerEvents = 'none';
-        confetti.style.zIndex = '9999';
-        confetti.style.animation = \`fall \${Math.random() * 3 + 2}s linear forwards\`;
-        
-        document.body.appendChild(confetti);
-        
-        setTimeout(() => {
-            confetti.remove();
-        }, 5000);
-    }
-}
-
-// Add CSS animation for confetti
-const style = document.createElement('style');
-style.textContent = \`
-    @keyframes fall {
-        to {
-            transform: translateY(100vh) rotate(360deg);
-        }
-    }
-\`;
-document.head.appendChild(style);`;
-}
-
-async function getTestHTML() {
+function getTestHTML() {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
