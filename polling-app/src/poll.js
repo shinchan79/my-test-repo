@@ -5,6 +5,7 @@ export class Poll {
     this.sessions = new Map();
     this.votes = new Map();
     this.pollData = null;
+    this.userVotes = new Map(); // Track user votes: userId -> option
     
     console.log('Poll Durable Object initialized');
     
@@ -12,6 +13,7 @@ export class Poll {
     this.state.blockConcurrencyWhile(async () => {
       const storedPollData = await this.state.storage.get('pollData');
       const storedVotes = await this.state.storage.get('votes');
+      const storedUserVotes = await this.state.storage.get('userVotes');
       
       if (storedPollData) {
         this.pollData = storedPollData;
@@ -21,6 +23,11 @@ export class Poll {
       if (storedVotes) {
         this.votes = new Map(Object.entries(storedVotes));
         console.log('Loaded votes:', Object.fromEntries(this.votes));
+      }
+
+      if (storedUserVotes) {
+        this.userVotes = new Map(Object.entries(storedUserVotes));
+        console.log('Loaded user votes:', Object.fromEntries(this.userVotes));
       }
     });
   }
@@ -54,7 +61,8 @@ export class Poll {
     };
     
     // Initialize votes for each option
-    this.votes.clear(); // Clear existing votes
+    this.votes.clear();
+    this.userVotes.clear(); // Clear user votes when creating new poll
     data.options.forEach(option => {
       this.votes.set(option, 0);
     });
@@ -65,6 +73,7 @@ export class Poll {
     // Persist to state
     await this.state.storage.put('pollData', this.pollData);
     await this.state.storage.put('votes', Object.fromEntries(this.votes));
+    await this.state.storage.put('userVotes', Object.fromEntries(this.userVotes));
 
     // Broadcast initial data to any connected clients
     this.broadcast({
@@ -81,9 +90,16 @@ export class Poll {
 
   async handleVote(request) {
     const data = await request.json();
-    const { option } = data;
+    const { option, userId } = data;
     
-    console.log('Vote received for option:', option);
+    // FIXED: Use provided userId or generate consistent fallback
+    const voterId = userId || 'anonymous_' + (request.headers.get('CF-Connecting-IP') || 'unknown').replace(/[^a-zA-Z0-9]/g, '_');
+    
+    console.log('=== VOTE HANDLER ===');
+    console.log('Option:', option);
+    console.log('UserId from request:', userId);
+    console.log('Final voterId:', voterId);
+    console.log('Current user votes:', Object.fromEntries(this.userVotes));
     console.log('Available options:', Array.from(this.votes.keys()));
     
     if (!this.votes.has(option)) {
@@ -94,23 +110,70 @@ export class Poll {
       });
     }
 
-    // Increment vote count
-    const currentVotes = this.votes.get(option) || 0;
-    this.votes.set(option, currentVotes + 1);
+    // Check if user has already voted for this option
+    const currentUserVote = this.userVotes.get(voterId);
+    let action = 'vote';
+
+    console.log('Current user vote for', voterId, ':', currentUserVote);
+
+    if (currentUserVote === option) {
+      // FIXED: User is unvoting the same option
+      console.log('UNVOTING: User clicked same option');
+      const currentVotes = this.votes.get(option);
+      this.votes.set(option, Math.max(0, currentVotes - 1));
+      this.userVotes.delete(voterId);
+      action = 'unvote';
+      console.log('User unvoted option:', option);
+    } else {
+      // User is voting for a new option or switching vote
+      if (currentUserVote) {
+        // FIXED: Remove vote from previous option (switch vote)
+        console.log('SWITCHING: From', currentUserVote, 'to', option);
+        const prevVotes = this.votes.get(currentUserVote);
+        this.votes.set(currentUserVote, Math.max(0, prevVotes - 1));
+        console.log('Removed vote from previous option:', currentUserVote);
+        action = 'switch';
+      } else {
+        console.log('NEW VOTE: First time voting');
+        action = 'vote';
+      }
+      
+      // Add vote to new option
+      const currentVotes = this.votes.get(option);
+      this.votes.set(option, currentVotes + 1);
+      this.userVotes.set(voterId, option);
+      console.log('User voted for option:', option);
+    }
     
+    console.log('Final action:', action);
     console.log('Updated votes:', Object.fromEntries(this.votes));
+    console.log('Updated user votes:', Object.fromEntries(this.userVotes));
     
     // Persist votes to storage
     await this.state.storage.put('votes', Object.fromEntries(this.votes));
+    await this.state.storage.put('userVotes', Object.fromEntries(this.userVotes));
     
     // Broadcast update to all connected clients
-    this.broadcast({
+    const total = Array.from(this.votes.values()).reduce((a, b) => a + b, 0);
+    const broadcastData = {
       type: "vote_update",
       votes: Object.fromEntries(this.votes),
-      total: Array.from(this.votes.values()).reduce((a, b) => a + b, 0)
-    });
+      total,
+      userVote: this.userVotes.get(voterId) || null,
+      action,
+      voterId // Add for debugging
+    };
+    
+    console.log('Broadcasting:', broadcastData);
+    this.broadcast(broadcastData);
 
-    return new Response(JSON.stringify({ success: true }), {
+    return new Response(JSON.stringify({ 
+      success: true, 
+      action,
+      userVote: this.userVotes.get(voterId) || null,
+      total,
+      voterId // Add for debugging
+    }), {
       headers: { "Content-Type": "application/json" }
     });
   }
@@ -123,15 +186,20 @@ export class Poll {
       });
     }
 
+    // Get userId to check current user's vote
+    const userId = new URL(request.url).searchParams.get('userId') || 
+                   'anonymous_' + (request.headers.get('CF-Connecting-IP') || 'unknown').replace(/[^a-zA-Z0-9]/g, '_');
+
     const total = Array.from(this.votes.values()).reduce((a, b) => a + b, 0);
     
     const response = {
       ...this.pollData,
       votes: Object.fromEntries(this.votes),
-      total
+      total,
+      userVote: this.userVotes.get(userId) || null
     };
     
-    console.log('Returning poll data:', response);
+    console.log('Returning poll data for userId:', userId, 'userVote:', response.userVote);
     
     return new Response(JSON.stringify(response), {
       headers: { "Content-Type": "application/json" }
@@ -145,9 +213,12 @@ export class Poll {
     server.accept();
 
     const sessionId = crypto.randomUUID();
-    this.sessions.set(sessionId, server);
+    const userId = new URL(request.url).searchParams.get('userId') || 
+                   'anonymous_' + (request.headers.get('CF-Connecting-IP') || 'unknown').replace(/[^a-zA-Z0-9]/g, '_');
+    
+    this.sessions.set(sessionId, { socket: server, userId });
 
-    console.log('WebSocket connection established, session ID:', sessionId);
+    console.log('WebSocket connection established:', { sessionId, userId });
     console.log('Total sessions:', this.sessions.size);
 
     // Send initial data
@@ -157,12 +228,12 @@ export class Poll {
         type: "poll_data",
         poll: this.pollData,
         votes: Object.fromEntries(this.votes),
-        total
+        total,
+        userVote: this.userVotes.get(userId) || null,
+        userId
       };
-      console.log('Sending initial data:', initialData);
+      console.log('Sending initial data for userId:', userId, 'userVote:', initialData.userVote);
       server.send(JSON.stringify(initialData));
-    } else {
-      console.log('No poll data available for WebSocket');
     }
 
     // Send user count update
@@ -172,9 +243,8 @@ export class Poll {
     });
 
     server.addEventListener("close", () => {
-      console.log('WebSocket connection closed, session ID:', sessionId);
+      console.log('WebSocket connection closed:', { sessionId, userId });
       this.sessions.delete(sessionId);
-      // Send updated user count
       this.broadcast({
         type: "user_count",
         count: this.sessions.size
@@ -182,9 +252,8 @@ export class Poll {
     });
 
     server.addEventListener("error", () => {
-      console.log('WebSocket error, session ID:', sessionId);
+      console.log('WebSocket error:', { sessionId, userId });
       this.sessions.delete(sessionId);
-      // Send updated user count
       this.broadcast({
         type: "user_count",
         count: this.sessions.size
@@ -196,15 +265,15 @@ export class Poll {
 
   broadcast(message) {
     const messageStr = JSON.stringify(message);
-    console.log('Broadcasting message to', this.sessions.size, 'sessions:', message);
+    console.log('Broadcasting message to', this.sessions.size, 'sessions:', message.type);
     
-    for (const session of this.sessions.values()) {
+    for (const [sessionId, sessionData] of this.sessions.entries()) {
       try {
-        session.send(messageStr);
+        sessionData.socket.send(messageStr);
       } catch (e) {
-        console.log('Failed to send message to session:', e);
-        // Session might be closed, ignore
+        console.log('Failed to send message to session:', sessionId, e);
+        this.sessions.delete(sessionId);
       }
     }
   }
-} 
+}

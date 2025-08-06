@@ -1,23 +1,44 @@
-// Real-time Polling App JavaScript
+// Real-time Polling App JavaScript with Vote/Unvote Toggle - FIXED VERSION
 let currentPollId = null;
 let websocket = null;
 let resultsChart = null;
 let activeUsers = 0;
+let currentUserId = null;
+let userCurrentVote = null; // Track user's current vote
+
+// FIXED: Generate consistent user ID
+function generateUserId() {
+    let userId = null;
+    try {
+        if (typeof Storage !== 'undefined') {
+            userId = localStorage.getItem('polling_user_id');
+        }
+    } catch (e) {
+        console.log('localStorage not available:', e);
+    }
+    
+    if (!userId) {
+        userId = 'user_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+        console.log('Generated new user ID:', userId);
+        
+        try {
+            if (typeof Storage !== 'undefined') {
+                localStorage.setItem('polling_user_id', userId);
+                console.log('Saved user ID to localStorage');
+            }
+        } catch (e) {
+            console.log('Could not save to localStorage:', e);
+        }
+    } else {
+        console.log('Using existing user ID:', userId);
+    }
+    
+    return userId;
+}
 
 // Debug function
 function debugLog(message) {
     console.log('[DEBUG]', message);
-    // Also show on page
-    const debugDiv = document.getElementById('debug') || createDebugDiv();
-    debugDiv.innerHTML += '<br>' + message;
-}
-
-function createDebugDiv() {
-    const div = document.createElement('div');
-    div.id = 'debug';
-    div.style.cssText = 'position:fixed;top:10px;right:10px;background:black;color:white;padding:10px;z-index:9999;max-width:300px;font-size:12px;';
-    document.body.appendChild(div);
-    return div;
 }
 
 // Generate a random poll ID
@@ -49,56 +70,65 @@ function showCreateForm() {
         resultsChart.destroy();
         resultsChart = null;
     }
+    userCurrentVote = null; // Reset user vote
 }
 
-// Create poll
-document.getElementById('pollForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
+// Initialize app
+document.addEventListener('DOMContentLoaded', function() {
+    // Generate user ID when app starts
+    currentUserId = generateUserId();
+    debugLog('User ID: ' + currentUserId);
     
-    const question = document.getElementById('question').value;
-    const options = Array.from(document.querySelectorAll('.option-input'))
-        .map(input => input.value.trim())
-        .filter(option => option.length > 0);
+    document.getElementById('pollForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
+        const question = document.getElementById('question').value;
+        const options = Array.from(document.querySelectorAll('.option-input'))
+            .map(input => input.value.trim())
+            .filter(option => option.length > 0);
 
-    if (options.length < 2) {
-        showError('Please add at least 2 options');
-        return;
-    }
-
-    const pollId = generatePollId();
-    currentPollId = pollId;
-
-    try {
-        showLoading();
-        const response = await fetch('/api/create?pollId=' + pollId, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ question, options })
-        });
-
-        if (response.ok) {
-            console.log('Poll created successfully, loading poll...');
-            loadPoll(pollId);
-        } else {
-            throw new Error('Failed to create poll');
+        if (options.length < 2) {
+            showError('Please add at least 2 options');
+            return;
         }
-    } catch (error) {
-        showError('Failed to create poll: ' + error.message);
-    }
+
+        const pollId = generatePollId();
+        currentPollId = pollId;
+
+        try {
+            showLoading();
+            const response = await fetch('/api/create?pollId=' + pollId, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question, options })
+            });
+
+            if (response.ok) {
+                console.log('Poll created successfully, loading poll...');
+                userCurrentVote = null; // Reset user vote for new poll
+                loadPoll(pollId);
+            } else {
+                throw new Error('Failed to create poll');
+            }
+        } catch (error) {
+            showError('Failed to create poll: ' + error.message);
+        }
+    });
 });
 
 // Load poll
 async function loadPoll(pollId) {
     try {
         showLoading();
-        const response = await fetch('/api/get?pollId=' + pollId);
+        const response = await fetch(`/api/get?pollId=${pollId}&userId=${currentUserId}`);
         const poll = await response.json();
 
         if (poll.error) {
             throw new Error(poll.error);
         }
 
-        console.log('Poll loaded, displaying...');
+        console.log('Poll loaded:', poll);
+        userCurrentVote = poll.userVote; // Set user's current vote
         displayPoll(poll);
         connectWebSocket(pollId);
         updatePollLink(pollId);
@@ -121,24 +151,30 @@ function displayPoll(poll) {
     poll.options.forEach(option => {
         const votes = poll.votes[option] || 0;
         const percentage = total > 0 ? (votes / total * 100).toFixed(1) : 0;
+        const isUserVote = userCurrentVote === option;
 
         const optionDiv = document.createElement('div');
-        optionDiv.className = 'option-item fade-in';
+        optionDiv.className = 'option-item fade-in' + (isUserVote ? ' user-voted' : '');
+        
+        // Determine button text and style
+        const buttonText = isUserVote ? 'Unvote' : 'Vote';
+        const buttonClass = isUserVote ? 'unvote-btn' : 'vote-btn';
+        
         optionDiv.innerHTML = `
             <div class="option-text">${option}</div>
-            <button class="vote-btn" data-option="${option}">Vote</button>
+            <button class="${buttonClass}" data-option="${option}">${buttonText}</button>
             <div class="vote-count">${votes} votes</div>
             <div class="progress-bar">
                 <div class="progress-fill" style="width: ${percentage}%"></div>
             </div>
         `;
         
-        // Add event listener to vote button
-        const voteBtn = optionDiv.querySelector('.vote-btn');
-        voteBtn.addEventListener('click', function() {
+        // Add event listener to vote/unvote button
+        const actionBtn = optionDiv.querySelector('.vote-btn, .unvote-btn');
+        actionBtn.addEventListener('click', function() {
             const option = this.getAttribute('data-option');
-            debugLog('Vote button clicked for option: ' + option);
-            vote(option);
+            debugLog('Action button clicked for option: ' + option);
+            toggleVote(option);
         });
         
         optionsContainer.appendChild(optionDiv);
@@ -147,58 +183,111 @@ function displayPoll(poll) {
     updateStatistics(poll.votes, total);
     createChart(poll.options, poll.votes);
     
-    console.log('Displaying poll with options:', poll.options);
+    console.log('Displaying poll with user vote:', userCurrentVote);
     document.getElementById('createForm').classList.add('hidden');
     document.getElementById('pollDisplay').classList.remove('hidden');
 }
 
-// Vote function
-async function vote(option) {
+// FIXED: Toggle vote with proper debugging
+async function toggleVote(option) {
     try {
-        debugLog('Voting for: ' + option + ' Poll ID: ' + currentPollId);
+        console.log('=== TOGGLE VOTE DEBUG ===');
+        console.log('Option:', option);
+        console.log('Current user vote:', userCurrentVote);
+        console.log('Current user ID:', currentUserId);
+        console.log('Poll ID:', currentPollId);
         
-        // Track the vote for analytics
-        trackVote(option);
+        const voteData = { option, userId: currentUserId };
+        console.log('Sending vote data:', voteData);
         
         const response = await fetch('/api/vote?pollId=' + currentPollId, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ option })
+            body: JSON.stringify(voteData)
         });
 
-        debugLog('Vote response: ' + response.status);
-
+        console.log('Response status:', response.status);
+        
         if (!response.ok) {
             const errorText = await response.text();
-            debugLog('Vote error: ' + errorText);
+            console.error('Vote error response:', errorText);
             throw new Error('Failed to vote: ' + response.status);
         }
 
         const result = await response.json();
-        debugLog('Vote success: ' + JSON.stringify(result));
+        console.log('Vote result:', result);
 
-        // Add visual feedback
-        const voteBtn = document.querySelector(`[data-option="${option}"]`);
-        if (voteBtn) {
-            voteBtn.textContent = 'Voted!';
-            voteBtn.style.background = 'linear-gradient(135deg, #20c997 0%, #28a745 100%)';
-            
-            setTimeout(() => {
-                voteBtn.textContent = 'Vote';
-                voteBtn.style.background = 'linear-gradient(135deg, #28a745 0%, #20c997 100%)';
-            }, 1000);
-        }
+        // FIXED: Update local state immediately
+        console.log('Previous userCurrentVote:', userCurrentVote);
+        userCurrentVote = result.userVote;
+        console.log('New userCurrentVote:', userCurrentVote);
+
+        // FIXED: Update UI immediately 
+        updateButtonStates();
+        showVoteAnimation(option, result.action);
+        
+        console.log('=== END TOGGLE VOTE DEBUG ===');
 
     } catch (error) {
-        debugLog('Vote error: ' + error.message);
+        console.error('Vote error:', error);
         showError('Failed to vote: ' + error.message);
+    }
+}
+
+// FIXED: Update button states based on user's current vote
+function updateButtonStates() {
+    console.log('Updating button states, userCurrentVote:', userCurrentVote);
+    const optionItems = document.querySelectorAll('.option-item');
+    
+    optionItems.forEach(item => {
+        const option = item.querySelector('.option-text').textContent;
+        const button = item.querySelector('.vote-btn, .unvote-btn');
+        const isUserVote = userCurrentVote === option;
+        
+        console.log(`Option: ${option}, isUserVote: ${isUserVote}`);
+        
+        // Update button appearance
+        button.className = isUserVote ? 'unvote-btn' : 'vote-btn';
+        button.textContent = isUserVote ? 'Unvote' : 'Vote';
+        
+        // Update item appearance
+        item.className = 'option-item fade-in' + (isUserVote ? ' user-voted' : '');
+    });
+}
+
+// Show vote animation
+function showVoteAnimation(option, action) {
+    const button = document.querySelector(`[data-option="${option}"]`);
+    if (button) {
+        const originalText = button.textContent;
+        
+        // Show feedback based on action
+        switch (action) {
+            case 'vote':
+                button.textContent = 'Voted!';
+                button.style.background = 'linear-gradient(135deg, #20c997 0%, #28a745 100%)';
+                break;
+            case 'unvote':
+                button.textContent = 'Removed!';
+                button.style.background = 'linear-gradient(135deg, #fd7e14 0%, #dc3545 100%)';
+                break;
+            case 'switch':
+                button.textContent = 'Switched!';
+                button.style.background = 'linear-gradient(135deg, #007bff 0%, #6610f2 100%)';
+                break;
+        }
+        
+        setTimeout(() => {
+            updateButtonStates(); // Reset to proper state
+            button.style.background = ''; // Reset style
+        }, 1500);
     }
 }
 
 // Connect WebSocket
 function connectWebSocket(pollId) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = protocol + '//' + window.location.host + '/ws/' + pollId;
+    const wsUrl = `${protocol}//${window.location.host}/ws/${pollId}?userId=${currentUserId}`;
     
     console.log('Connecting to WebSocket:', wsUrl);
     websocket = new WebSocket(wsUrl);
@@ -215,16 +304,30 @@ function connectWebSocket(pollId) {
         
         if (data.type === 'vote_update') {
             console.log('Vote update received:', data);
+            
+            // FIXED: Only update userCurrentVote if it's for our user
+            if (data.voterId === currentUserId || !data.voterId) {
+                console.log('Updating userCurrentVote from WebSocket:', data.userVote);
+                userCurrentVote = data.userVote;
+                updateButtonStates(); // Update button states
+            }
+            
             updateVotes(data.votes, data.total);
             updateStatistics(data.votes, data.total);
             updateChart(data.votes);
+            
         } else if (data.type === 'poll_data') {
             console.log('Poll data received:', data);
+            
+            // Set user's current vote from server
+            userCurrentVote = data.userVote;
+            
             displayPoll({
                 question: data.poll.question,
                 options: data.poll.options,
                 votes: data.votes,
-                total: data.total
+                total: data.total,
+                userVote: data.userVote
             });
         } else if (data.type === 'user_count') {
             activeUsers = data.count;
@@ -255,12 +358,10 @@ function updateVotes(votes, total) {
     const optionsContainer = document.getElementById('pollOptions');
     const optionItems = optionsContainer.querySelectorAll('.option-item');
 
-    optionItems.forEach((item, index) => {
+    optionItems.forEach((item) => {
         const option = item.querySelector('.option-text').textContent;
         const votesCount = votes[option] || 0;
         const percentage = total > 0 ? (votesCount / total * 100).toFixed(1) : 0;
-
-        console.log('Updating votes for option:', option, 'votes:', votesCount, 'percentage:', percentage);
 
         item.querySelector('.vote-count').textContent = votesCount + ' votes';
         item.querySelector('.progress-fill').style.width = percentage + '%';
@@ -280,8 +381,14 @@ function updateActiveUsers() {
     document.getElementById('activeUsers').textContent = activeUsers;
 }
 
-// Create chart
+// FIXED: Create chart with proper cleanup
 function createChart(options, votes) {
+    // Destroy existing chart if exists
+    if (resultsChart) {
+        resultsChart.destroy();
+        resultsChart = null;
+    }
+    
     const ctx = document.getElementById('resultsChart').getContext('2d');
     
     const colors = [
@@ -414,100 +521,7 @@ window.addEventListener('load', function() {
     }
 });
 
-// Add keyboard shortcuts
-document.addEventListener('keydown', function(e) {
-    if (e.ctrlKey || e.metaKey) {
-        switch(e.key) {
-            case 'n':
-                e.preventDefault();
-                showCreateForm();
-                break;
-            case 'r':
-                e.preventDefault();
-                if (currentPollId) {
-                    loadPoll(currentPollId);
-                }
-                break;
-        }
-    }
-});
-
-// Add service worker for offline support (optional)
-if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js')
-            .then(registration => {
-                console.log('SW registered: ', registration);
-            })
-            .catch(registrationError => {
-                console.log('SW registration failed: ', registrationError);
-            });
-    });
-}
-
-// Add analytics tracking
-function trackEvent(eventName, data = {}) {
-    // Simple analytics tracking
-    console.log('Event:', eventName, data);
-    
-    // You can integrate with Google Analytics or other services here
-    if (typeof gtag !== 'undefined') {
-        gtag('event', eventName, data);
-    }
-}
-
-// Track poll creation
-document.getElementById('pollForm').addEventListener('submit', () => {
-    trackEvent('poll_created');
-});
-
 // Track votes for analytics
-function trackVote(option) {
-    trackEvent('vote_cast', { option });
+function trackVote(option, action) {
+    console.log('Vote tracked:', { option, action, userId: currentUserId });
 }
-
-// Add smooth scrolling for better UX
-document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-    anchor.addEventListener('click', function (e) {
-        e.preventDefault();
-        document.querySelector(this.getAttribute('href')).scrollIntoView({
-            behavior: 'smooth'
-        });
-    });
-});
-
-// Add confetti effect for successful vote (optional)
-function addConfetti() {
-    // Simple confetti effect
-    const colors = ['#667eea', '#764ba2', '#f093fb', '#f5576c'];
-    for (let i = 0; i < 50; i++) {
-        const confetti = document.createElement('div');
-        confetti.style.position = 'fixed';
-        confetti.style.left = Math.random() * 100 + 'vw';
-        confetti.style.top = '-10px';
-        confetti.style.width = '10px';
-        confetti.style.height = '10px';
-        confetti.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
-        confetti.style.borderRadius = '50%';
-        confetti.style.pointerEvents = 'none';
-        confetti.style.zIndex = '9999';
-        confetti.style.animation = `fall ${Math.random() * 3 + 2}s linear forwards`;
-        
-        document.body.appendChild(confetti);
-        
-        setTimeout(() => {
-            confetti.remove();
-        }, 5000);
-    }
-}
-
-// Add CSS animation for confetti
-const style = document.createElement('style');
-style.textContent = `
-    @keyframes fall {
-        to {
-            transform: translateY(100vh) rotate(360deg);
-        }
-    }
-`;
-document.head.appendChild(style); 
