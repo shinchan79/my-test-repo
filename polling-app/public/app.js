@@ -1,40 +1,24 @@
-// Real-time Polling App JavaScript with Vote/Unvote Toggle - FIXED VERSION
+// Real-time Polling App JavaScript with Multi-Vote Support - COMPLETE FIXED VERSION
 let currentPollId = null;
 let websocket = null;
 let resultsChart = null;
 let activeUsers = 0;
-let currentUserId = null;
-let userCurrentVote = null; // Track user's current vote
+let userCurrentVotes = []; // Track user's current votes as array
 
-// FIXED: Generate consistent user ID
+// FIXED: Generate unique user ID for each tab/session
 function generateUserId() {
-    let userId = null;
-    try {
-        if (typeof Storage !== 'undefined') {
-            userId = localStorage.getItem('polling_user_id');
-        }
-    } catch (e) {
-        console.log('localStorage not available:', e);
-    }
+    const timestamp = Date.now();
+    const random = Math.random().toString(36).substr(2, 12);
+    const tabRandom = Math.floor(Math.random() * 999999);
+    const sessionId = `user_${timestamp}_${random}_${tabRandom}`;
     
-    if (!userId) {
-        userId = 'user_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
-        console.log('Generated new user ID:', userId);
-        
-        try {
-            if (typeof Storage !== 'undefined') {
-                localStorage.setItem('polling_user_id', userId);
-                console.log('Saved user ID to localStorage');
-            }
-        } catch (e) {
-            console.log('Could not save to localStorage:', e);
-        }
-    } else {
-        console.log('Using existing user ID:', userId);
-    }
-    
-    return userId;
+    console.log('🆔 Generated UNIQUE user ID:', sessionId);
+    return sessionId;
 }
+
+// Initialize user ID immediately when script loads
+const currentUserId = generateUserId();
+console.log('🚀 Current User ID:', currentUserId);
 
 // Debug function
 function debugLog(message) {
@@ -70,14 +54,15 @@ function showCreateForm() {
         resultsChart.destroy();
         resultsChart = null;
     }
-    userCurrentVote = null; // Reset user vote
+    userCurrentVotes = [];
 }
 
 // Initialize app
 document.addEventListener('DOMContentLoaded', function() {
-    // Generate user ID when app starts
-    currentUserId = generateUserId();
-    debugLog('User ID: ' + currentUserId);
+    debugLog('🚀 App initialized with User ID: ' + currentUserId);
+    
+    // Show user ID in UI for debugging
+    showUserInfo();
     
     document.getElementById('pollForm').addEventListener('submit', async (e) => {
         e.preventDefault();
@@ -105,7 +90,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
             if (response.ok) {
                 console.log('Poll created successfully, loading poll...');
-                userCurrentVote = null; // Reset user vote for new poll
+                userCurrentVotes = [];
                 loadPoll(pollId);
             } else {
                 throw new Error('Failed to create poll');
@@ -116,19 +101,46 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 
-// Load poll
+// Show user info for debugging
+function showUserInfo() {
+    const header = document.querySelector('.header');
+    const userInfo = document.createElement('div');
+    userInfo.style.cssText = `
+        position: absolute;
+        top: 10px;
+        right: 20px;
+        background: rgba(255,255,255,0.2);
+        padding: 8px 12px;
+        border-radius: 20px;
+        font-size: 12px;
+        backdrop-filter: blur(10px);
+        max-width: 200px;
+        word-break: break-all;
+        z-index: 10;
+    `;
+    userInfo.innerHTML = `👤 ${currentUserId}`;
+    header.style.position = 'relative';
+    header.appendChild(userInfo);
+}
+
+// FIXED: Load poll with forced userId
 async function loadPoll(pollId) {
     try {
         showLoading();
-        const response = await fetch(`/api/get?pollId=${pollId}&userId=${currentUserId}`);
+        
+        // FORCE send userId in API request
+        const url = `/api/get?pollId=${pollId}&userId=${encodeURIComponent(currentUserId)}`;
+        console.log('📥 Loading poll with URL:', url);
+        
+        const response = await fetch(url);
         const poll = await response.json();
 
         if (poll.error) {
             throw new Error(poll.error);
         }
 
-        console.log('Poll loaded:', poll);
-        userCurrentVote = poll.userVote; // Set user's current vote
+        console.log('📊 Poll loaded:', poll);
+        userCurrentVotes = poll.userVotes || [];
         displayPoll(poll);
         connectWebSocket(pollId);
         updatePollLink(pollId);
@@ -151,14 +163,13 @@ function displayPoll(poll) {
     poll.options.forEach(option => {
         const votes = poll.votes[option] || 0;
         const percentage = total > 0 ? (votes / total * 100).toFixed(1) : 0;
-        const isUserVote = userCurrentVote === option;
+        const isUserVoted = userCurrentVotes.includes(option);
 
         const optionDiv = document.createElement('div');
-        optionDiv.className = 'option-item fade-in' + (isUserVote ? ' user-voted' : '');
+        optionDiv.className = 'option-item fade-in' + (isUserVoted ? ' user-voted' : '');
         
-        // Determine button text and style
-        const buttonText = isUserVote ? 'Unvote' : 'Vote';
-        const buttonClass = isUserVote ? 'unvote-btn' : 'vote-btn';
+        const buttonText = isUserVoted ? 'Unvote' : 'Vote';
+        const buttonClass = isUserVoted ? 'unvote-btn' : 'vote-btn';
         
         optionDiv.innerHTML = `
             <div class="option-text">${option}</div>
@@ -183,22 +194,26 @@ function displayPoll(poll) {
     updateStatistics(poll.votes, total);
     createChart(poll.options, poll.votes);
     
-    console.log('Displaying poll with user vote:', userCurrentVote);
+    console.log('Displaying poll with user votes:', userCurrentVotes);
     document.getElementById('createForm').classList.add('hidden');
     document.getElementById('pollDisplay').classList.remove('hidden');
 }
 
-// FIXED: Toggle vote with proper debugging
+// FIXED: Toggle vote with forced userId
 async function toggleVote(option) {
     try {
-        console.log('=== TOGGLE VOTE DEBUG ===');
-        console.log('Option:', option);
-        console.log('Current user vote:', userCurrentVote);
-        console.log('Current user ID:', currentUserId);
-        console.log('Poll ID:', currentPollId);
+        console.log('=== VOTE DEBUG ===');
+        console.log('🆔 Using User ID:', currentUserId);
+        console.log('🗳️ Option:', option);
+        console.log('📋 Current votes:', userCurrentVotes);
+        console.log('🎯 Expected action:', userCurrentVotes.includes(option) ? 'UNVOTE' : 'VOTE');
         
-        const voteData = { option, userId: currentUserId };
-        console.log('Sending vote data:', voteData);
+        // FORCE send userId from frontend
+        const voteData = { 
+            option, 
+            userId: currentUserId  // Always send our generated userId
+        };
+        console.log('📤 Sending:', JSON.stringify(voteData));
         
         const response = await fetch('/api/vote?pollId=' + currentPollId, {
             method: 'POST',
@@ -215,18 +230,20 @@ async function toggleVote(option) {
         }
 
         const result = await response.json();
-        console.log('Vote result:', result);
+        console.log('📥 Response:', JSON.stringify(result));
+        console.log('🔄 Action performed:', result.action);
+        console.log('📊 New user votes:', result.userVotes);
 
-        // FIXED: Update local state immediately
-        console.log('Previous userCurrentVote:', userCurrentVote);
-        userCurrentVote = result.userVote;
-        console.log('New userCurrentVote:', userCurrentVote);
+        // Update local state
+        const oldVotes = [...userCurrentVotes];
+        userCurrentVotes = result.userVotes || [];
+        console.log(`🔄 Local state: [${oldVotes.join(', ')}] → [${userCurrentVotes.join(', ')}]`);
 
-        // FIXED: Update UI immediately 
+        // Update UI
         updateButtonStates();
         showVoteAnimation(option, result.action);
         
-        console.log('=== END TOGGLE VOTE DEBUG ===');
+        console.log('=== END VOTE DEBUG ===');
 
     } catch (error) {
         console.error('Vote error:', error);
@@ -234,24 +251,24 @@ async function toggleVote(option) {
     }
 }
 
-// FIXED: Update button states based on user's current vote
+// Update button states based on user's current votes array
 function updateButtonStates() {
-    console.log('Updating button states, userCurrentVote:', userCurrentVote);
+    console.log('Updating button states, userCurrentVotes:', userCurrentVotes);
     const optionItems = document.querySelectorAll('.option-item');
     
     optionItems.forEach(item => {
         const option = item.querySelector('.option-text').textContent;
         const button = item.querySelector('.vote-btn, .unvote-btn');
-        const isUserVote = userCurrentVote === option;
+        const isUserVoted = userCurrentVotes.includes(option);
         
-        console.log(`Option: ${option}, isUserVote: ${isUserVote}`);
+        console.log(`Option: ${option}, isUserVoted: ${isUserVoted}`);
         
         // Update button appearance
-        button.className = isUserVote ? 'unvote-btn' : 'vote-btn';
-        button.textContent = isUserVote ? 'Unvote' : 'Vote';
+        button.className = isUserVoted ? 'unvote-btn' : 'vote-btn';
+        button.textContent = isUserVoted ? 'Unvote' : 'Vote';
         
         // Update item appearance
-        item.className = 'option-item fade-in' + (isUserVote ? ' user-voted' : '');
+        item.className = 'option-item fade-in' + (isUserVoted ? ' user-voted' : '');
     });
 }
 
@@ -259,9 +276,8 @@ function updateButtonStates() {
 function showVoteAnimation(option, action) {
     const button = document.querySelector(`[data-option="${option}"]`);
     if (button) {
-        const originalText = button.textContent;
+        console.log(`🎬 Animation: ${option} → ${action}`);
         
-        // Show feedback based on action
         switch (action) {
             case 'vote':
                 button.textContent = 'Voted!';
@@ -271,29 +287,27 @@ function showVoteAnimation(option, action) {
                 button.textContent = 'Removed!';
                 button.style.background = 'linear-gradient(135deg, #fd7e14 0%, #dc3545 100%)';
                 break;
-            case 'switch':
-                button.textContent = 'Switched!';
-                button.style.background = 'linear-gradient(135deg, #007bff 0%, #6610f2 100%)';
-                break;
         }
         
         setTimeout(() => {
-            updateButtonStates(); // Reset to proper state
-            button.style.background = ''; // Reset style
+            updateButtonStates();
+            button.style.background = '';
         }, 1500);
     }
 }
 
-// Connect WebSocket
+// FIXED: Connect WebSocket with forced userId
 function connectWebSocket(pollId) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/${pollId}?userId=${currentUserId}`;
     
-    console.log('Connecting to WebSocket:', wsUrl);
+    // FORCE send userId in WebSocket URL
+    const wsUrl = `${protocol}//${window.location.host}/ws/${pollId}?userId=${encodeURIComponent(currentUserId)}`;
+    
+    console.log('🔌 WebSocket URL:', wsUrl);
     websocket = new WebSocket(wsUrl);
     
     websocket.onopen = function() {
-        console.log('WebSocket connected');
+        console.log('✅ WebSocket connected');
         activeUsers++;
         updateActiveUsers();
     };
@@ -303,13 +317,17 @@ function connectWebSocket(pollId) {
         const data = JSON.parse(event.data);
         
         if (data.type === 'vote_update') {
-            console.log('Vote update received:', data);
+            console.log('🗳️ Vote update from:', data.voterId);
+            console.log('🆔 Our user ID:', currentUserId);
+            console.log('🔍 Vote update data:', data);
             
-            // FIXED: Only update userCurrentVote if it's for our user
-            if (data.voterId === currentUserId || !data.voterId) {
-                console.log('Updating userCurrentVote from WebSocket:', data.userVote);
-                userCurrentVote = data.userVote;
-                updateButtonStates(); // Update button states
+            // Only update our votes if it's from our user
+            if (data.voterId === currentUserId) {
+                console.log('🔄 Updating our votes from WebSocket:', data.userVotes);
+                userCurrentVotes = data.userVotes || [];
+                updateButtonStates();
+            } else {
+                console.log('👥 Vote from other user, ignoring user vote state update');
             }
             
             updateVotes(data.votes, data.total);
@@ -317,17 +335,17 @@ function connectWebSocket(pollId) {
             updateChart(data.votes);
             
         } else if (data.type === 'poll_data') {
-            console.log('Poll data received:', data);
+            console.log('📊 Poll data received:', data);
             
-            // Set user's current vote from server
-            userCurrentVote = data.userVote;
+            // Set user's current votes from server
+            userCurrentVotes = data.userVotes || [];
             
             displayPoll({
                 question: data.poll.question,
                 options: data.poll.options,
                 votes: data.votes,
                 total: data.total,
-                userVote: data.userVote
+                userVotes: data.userVotes
             });
         } else if (data.type === 'user_count') {
             activeUsers = data.count;
@@ -381,7 +399,7 @@ function updateActiveUsers() {
     document.getElementById('activeUsers').textContent = activeUsers;
 }
 
-// FIXED: Create chart with proper cleanup
+// Create chart with proper cleanup
 function createChart(options, votes) {
     // Destroy existing chart if exists
     if (resultsChart) {
