@@ -1,6 +1,6 @@
 import { Poll } from './poll.js';
 
-// Export Poll class cho Durable Object
+// Export Poll class for Durable Object
 export { Poll };
 
 export default {
@@ -19,7 +19,6 @@ export default {
       });
     }
 
-    // Serve static files
     if (path === "/" || path === "/index.html") {
       return serveStaticFile("index.html", env);
     }
@@ -36,7 +35,6 @@ export default {
       return serveStaticFile("test.html", env);
     }
 
-    // API endpoints
     if (path.startsWith("/api/")) {
       return handleAPI(request, env, path);
     }
@@ -158,7 +156,6 @@ async function handleWebSocket(request, env, path) {
 }
 
 async function serveStaticFile(filename, env) {
-  // Define static files inline (since we can't read from filesystem)
   const staticFiles = {
     'index.html': {
       content: getIndexHTML(),

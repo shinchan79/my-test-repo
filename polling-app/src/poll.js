@@ -37,27 +37,26 @@ export class Poll {
     });
   }
 
-  // FIXED: Consistent userId generation helper
   generateAnonymousUserId(request) {
-    // Try multiple headers to get a consistent identifier
     const ip = request.headers.get('CF-Connecting-IP') || 
                request.headers.get('X-Forwarded-For') || 
                request.headers.get('X-Real-IP') || 
                'unknown';
     
     const userAgent = request.headers.get('User-Agent') || 'unknown';
-    
-    // Create a more stable hash from IP + User-Agent
-    const combined = `${ip}_${userAgent}`;
+    const acceptLanguage = request.headers.get('Accept-Language') || 'unknown';
+    const acceptEncoding = request.headers.get('Accept-Encoding') || 'unknown';
+
+    const combined = `${ip}_${userAgent}_${acceptLanguage}_${acceptEncoding}`;
     let hash = 0;
     for (let i = 0; i < combined.length; i++) {
       const char = combined.charCodeAt(i);
       hash = ((hash << 5) - hash) + char;
-      hash = hash & hash; // Convert to 32bit integer
+      hash = hash & hash;
     }
     
     const anonymousId = `anonymous_${Math.abs(hash).toString(36)}`;
-    console.log('Generated anonymous ID:', anonymousId, 'from IP:', ip);
+    console.log('Generated anonymous ID:', anonymousId, 'from IP:', ip, 'User-Agent:', userAgent.substring(0, 50));
     return anonymousId;
   }
 
@@ -97,10 +96,9 @@ export class Poll {
       options: data.options,
       created: Date.now()
     };
-    
-    // Initialize votes for each option
+
     this.votes.clear();
-    this.userVotes.clear(); // Clear user votes when creating new poll
+    this.userVotes.clear();
     data.options.forEach(option => {
       this.votes.set(option, 0);
     });
@@ -108,12 +106,10 @@ export class Poll {
     console.log('Created poll with options:', data.options);
     console.log('Initialized votes:', Object.fromEntries(this.votes));
 
-    // Persist to state
     await this.state.storage.put('pollData', this.pollData);
     await this.state.storage.put('votes', Object.fromEntries(this.votes));
     await this.state.storage.put('userVotes', this.getUserVotesForStorage());
 
-    // Broadcast initial data to any connected clients
     this.broadcast({
       type: "poll_data",
       poll: this.pollData,
@@ -129,9 +125,12 @@ export class Poll {
   async handleVote(request) {
     const data = await request.json();
     const { option, userId } = data;
-    
-    // FIXED: Use consistent userId generation
-    const voterId = userId || this.generateAnonymousUserId(request);
+
+    let voterId = userId;
+    if (!voterId) {
+      voterId = this.generateAnonymousUserId(request);
+      console.log('No userId provided, generated:', voterId);
+    }
     
     console.log('=== MULTI-VOTE HANDLER ===');
     console.log('Option:', option);
@@ -146,7 +145,6 @@ export class Poll {
       });
     }
 
-    // Get user's current votes as Set
     let userCurrentVotes = this.userVotes.get(voterId);
     if (!userCurrentVotes) {
       userCurrentVotes = new Set();
@@ -156,10 +154,8 @@ export class Poll {
     console.log('Current user votes:', Array.from(userCurrentVotes));
 
     let action = '';
-    
-    // Toggle vote logic for multi-select
+
     if (userCurrentVotes.has(option)) {
-      // User is UNVOTING this option
       console.log('UNVOTING option:', option);
       userCurrentVotes.delete(option);
       const currentVotes = this.votes.get(option);
@@ -188,9 +184,9 @@ export class Poll {
       type: "vote_update",
       votes: Object.fromEntries(this.votes),
       total,
-      userVotes: Array.from(userCurrentVotes), // Send array of user's votes
+      userVotes: Array.from(userCurrentVotes),
       action,
-      voterId // Add for debugging
+      voterId
     };
     
     console.log('Broadcasting:', broadcastData);
@@ -199,9 +195,9 @@ export class Poll {
     return new Response(JSON.stringify({ 
       success: true, 
       action,
-      userVotes: Array.from(userCurrentVotes), // Return array of user votes
+      userVotes: Array.from(userCurrentVotes),
       total,
-      voterId // Add for debugging
+      voterId
     }), {
       headers: { "Content-Type": "application/json" }
     });
@@ -215,13 +211,15 @@ export class Poll {
       });
     }
 
-    // FIXED: Get userId with consistent generation
     const url = new URL(request.url);
-    const userId = url.searchParams.get('userId') || this.generateAnonymousUserId(request);
+    let userId = url.searchParams.get('userId');
+    if (!userId) {
+      userId = this.generateAnonymousUserId(request);
+      console.log('No userId in URL, generated:', userId);
+    }
 
     const total = Array.from(this.votes.values()).reduce((a, b) => a + b, 0);
-    
-    // Get user's votes as array
+
     const userCurrentVotes = this.userVotes.get(userId);
     const userVotesArray = userCurrentVotes ? Array.from(userCurrentVotes) : [];
     
@@ -229,11 +227,11 @@ export class Poll {
       ...this.pollData,
       votes: Object.fromEntries(this.votes),
       total,
-      userVotes: userVotesArray // Return array of user votes
+      userVotes: userVotesArray
     };
     
     console.log('Returning poll data for userId:', userId, 'userVotes:', userVotesArray);
-    
+
     return new Response(JSON.stringify(response), {
       headers: { "Content-Type": "application/json" }
     });
@@ -246,21 +244,22 @@ export class Poll {
     server.accept();
 
     const sessionId = crypto.randomUUID();
-    
-    // FIXED: Get userId with consistent generation
+
     const url = new URL(request.url);
-    const userId = url.searchParams.get('userId') || this.generateAnonymousUserId(request);
-    
+    let userId = url.searchParams.get('userId');
+    if (!userId) {
+      userId = this.generateAnonymousUserId(request);
+      console.log('WebSocket: No userId in URL, generated:', userId);
+    }
+
     this.sessions.set(sessionId, { socket: server, userId });
 
     console.log('WebSocket connection established:', { sessionId, userId });
     console.log('Total sessions:', this.sessions.size);
 
-    // Send initial data
     if (this.pollData) {
       const total = Array.from(this.votes.values()).reduce((a, b) => a + b, 0);
-      
-      // Get user's votes as array
+
       const userCurrentVotes = this.userVotes.get(userId);
       const userVotesArray = userCurrentVotes ? Array.from(userCurrentVotes) : [];
       
@@ -269,14 +268,13 @@ export class Poll {
         poll: this.pollData,
         votes: Object.fromEntries(this.votes),
         total,
-        userVotes: userVotesArray, // Send array of user votes
+        userVotes: userVotesArray,
         userId
       };
       console.log('Sending initial data for userId:', userId, 'userVotes:', userVotesArray);
       server.send(JSON.stringify(initialData));
     }
 
-    // Send user count update
     this.broadcast({
       type: "user_count",
       count: this.sessions.size
